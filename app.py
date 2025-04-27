@@ -11,6 +11,15 @@ from wordcloud import WordCloud
 import base64
 from collections import Counter
 
+# ML imports
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import NMF
+from sklearn.cluster import KMeans
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+import scipy.sparse as sp
+
 # Page configuration MUST be the first Streamlit command
 st.set_page_config(page_title="VibeChek AI Dashboard", layout="wide")
 
@@ -50,6 +59,389 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# ML functions for smart recommendations
+def prepare_review_features(reviews_df):
+    """Transform reviews into feature vectors for ML"""
+    
+    # Skip if no reviews
+    if len(reviews_df) < 10:
+        return None
+    
+    # Text features
+    reviews_df["word_count"] = reviews_df["Cleaned_Review"].apply(lambda x: len(str(x).split()))
+    reviews_df["char_count"] = reviews_df["Cleaned_Review"].apply(lambda x: len(str(x)))
+    
+    # Create TF-IDF features from review text
+    tfidf = TfidfVectorizer(
+        max_features=200,  # Limit features to avoid overfitting
+        min_df=2,          # Ignore terms that appear in fewer than 2 documents
+        max_df=0.85,       # Ignore terms that appear in more than 85% of documents
+        stop_words='english'
+    )
+    
+    # Create a sparse matrix of TF-IDF features
+    tfidf_matrix = tfidf.fit_transform(reviews_df["Cleaned_Review"].fillna(""))
+    
+    # Create a feature for sentiment (0 for Negative, 1 for Neutral, 2 for Positive)
+    sentiment_map = {"Negative": 0, "Neutral": 1, "Positive": 2}
+    reviews_df["sentiment_numeric"] = reviews_df["Sentiment"].map(sentiment_map)
+    
+    # Create feature names
+    feature_names = tfidf.get_feature_names_out().tolist()
+    
+    return {
+        "feature_matrix": tfidf_matrix,
+        "feature_names": feature_names,
+        "vectorizer": tfidf,
+        "reviews_with_features": reviews_df
+    }
+
+def discover_review_aspects(feature_data, num_aspects=6):
+    """Use NMF to discover key aspects in reviews"""
+    
+    if feature_data is None or feature_data["feature_matrix"].shape[0] < 10:
+        return None
+    
+    # Adjust number of aspects based on data size
+    num_aspects = min(num_aspects, max(2, feature_data["feature_matrix"].shape[0] // 10))
+    
+    # Non-negative Matrix Factorization for topic modeling/aspect extraction
+    nmf = NMF(n_components=num_aspects, random_state=42)
+    nmf_features = nmf.fit_transform(feature_data["feature_matrix"])
+    
+    # Get top terms for each aspect
+    aspects = []
+    feature_names = feature_data["feature_names"]
+    
+    for aspect_idx, aspect in enumerate(nmf.components_):
+        # Get top 10 terms for this aspect
+        top_terms_idx = aspect.argsort()[-10:][::-1]
+        top_terms = [feature_names[i] for i in top_terms_idx if i < len(feature_names)]
+        
+        # Generate aspect name from top terms (simplified)
+        aspect_name = f"Aspect {aspect_idx+1}: {top_terms[0].capitalize()}"
+        
+        aspects.append({
+            "id": aspect_idx,
+            "name": aspect_name,
+            "top_terms": top_terms,
+            "weight": np.sum(aspect)  # Importance of this aspect
+        })
+    
+    # Sort aspects by weight
+    aspects.sort(key=lambda x: x["weight"], reverse=True)
+    
+    return {
+        "aspects": aspects,
+        "nmf_model": nmf,
+        "aspect_features": nmf_features
+    }
+
+def analyze_aspect_sentiment(reviews_df, aspects_data):
+    """Analyze sentiment for each aspect"""
+    
+    if aspects_data is None:
+        return None
+        
+    # For each aspect, calculate sentiment distribution
+    aspect_sentiments = []
+    
+    for aspect_idx, aspect in enumerate(aspects_data["aspects"]):
+        # Get aspect weights for each review
+        aspect_weights = aspects_data["aspect_features"][:, aspect_idx]
+        
+        # Find reviews where this aspect is prominent (weight > mean + std)
+        threshold = np.mean(aspect_weights) + np.std(aspect_weights)
+        relevant_indices = np.where(aspect_weights > threshold)[0]
+        
+        # Get sentiments for these reviews
+        relevant_sentiments = reviews_df.iloc[relevant_indices]["Sentiment"].value_counts(normalize=True)
+        
+        # Calculate a sentiment score (-1 to 1)
+        sentiment_score = 0
+        if "Positive" in relevant_sentiments:
+            sentiment_score += relevant_sentiments["Positive"]
+        if "Negative" in relevant_sentiments:
+            sentiment_score -= relevant_sentiments["Negative"]
+            
+        # Store results
+        aspect_sentiments.append({
+            "aspect_id": aspect_idx,
+            "aspect_name": aspect["name"],
+            "sentiment_score": sentiment_score,
+            "sentiment_dist": relevant_sentiments.to_dict() if not relevant_sentiments.empty else {},
+            "relevant_reviews": len(relevant_indices),
+            "top_terms": aspect["top_terms"]
+        })
+    
+    return aspect_sentiments
+
+def cluster_reviews(reviews_df, aspects_data, num_clusters=4):
+    """Cluster reviews based on aspect weights"""
+    
+    if aspects_data is None:
+        return None
+        
+    # Use aspect features for clustering
+    kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+    clusters = kmeans.fit_predict(aspects_data["aspect_features"])
+    
+    # Add cluster to dataframe
+    reviews_df_with_clusters = reviews_df.copy()
+    reviews_df_with_clusters["cluster"] = clusters
+    
+    # Analyze each cluster
+    cluster_insights = []
+    
+    for cluster_id in range(num_clusters):
+        # Get reviews in this cluster
+        cluster_reviews = reviews_df_with_clusters[reviews_df_with_clusters["cluster"] == cluster_id]
+        
+        if len(cluster_reviews) == 0:
+            continue
+            
+        # Check sentiment distribution
+        sentiment_dist = cluster_reviews["Sentiment"].value_counts(normalize=True)
+        
+        # Find dominant aspects for this cluster
+        cluster_centroid = kmeans.cluster_centers_[cluster_id]
+        dominant_aspects = []
+        
+        for aspect_idx, weight in enumerate(cluster_centroid):
+            if weight > np.mean(cluster_centroid) + 0.5 * np.std(cluster_centroid):
+                dominant_aspects.append({
+                    "aspect_id": aspect_idx,
+                    "aspect_name": aspects_data["aspects"][aspect_idx]["name"],
+                    "weight": weight
+                })
+        
+        # Get sample reviews
+        sample_reviews = cluster_reviews["snippet"].head(3).tolist()
+        
+        # Determine cluster sentiment
+        pos_pct = sentiment_dist.get("Positive", 0)
+        neg_pct = sentiment_dist.get("Negative", 0)
+        
+        if pos_pct > 0.6:
+            cluster_sentiment = "Positive"
+        elif neg_pct > 0.4:
+            cluster_sentiment = "Negative"
+        else:
+            cluster_sentiment = "Mixed"
+        
+        # Store cluster insights
+        cluster_insights.append({
+            "cluster_id": cluster_id,
+            "size": len(cluster_reviews),
+            "sentiment": cluster_sentiment,
+            "sentiment_dist": sentiment_dist.to_dict(),
+            "dominant_aspects": dominant_aspects,
+            "sample_reviews": sample_reviews
+        })
+    
+    return cluster_insights
+
+def generate_ml_recommendations(reviews_df):
+    """Generate smart recommendations using ML"""
+    
+    # Check if we have enough data
+    if len(reviews_df) < 20:
+        return {
+            "status": "insufficient_data",
+            "message": "Need at least 20 reviews for ML-based recommendations"
+        }
+    
+    try:
+        # 1. Prepare features
+        feature_data = prepare_review_features(reviews_df)
+        
+        if feature_data is None:
+            return {
+                "status": "error",
+                "message": "Error preparing features"
+            }
+        
+        # 2. Discover aspects
+        num_aspects = min(8, len(reviews_df) // 10)  # Scale with data size
+        aspects_data = discover_review_aspects(feature_data, num_aspects)
+        
+        if aspects_data is None:
+            return {
+                "status": "error",
+                "message": "Error discovering aspects"
+            }
+        
+        # 3. Analyze sentiment for each aspect
+        aspect_sentiments = analyze_aspect_sentiment(reviews_df, aspects_data)
+        
+        # 4. Cluster reviews
+        num_clusters = min(5, len(reviews_df) // 20)  # Scale with data size
+        cluster_insights = cluster_reviews(reviews_df, aspects_data, num_clusters)
+        
+        # 5. Generate recommendations
+        positive_insights = []
+        negative_insights = []
+        action_items = []
+        
+        # Add aspect-based insights
+        if aspect_sentiments:
+            # Positive aspect insights
+            for aspect in aspect_sentiments:
+                if aspect["sentiment_score"] > 0.3 and aspect["relevant_reviews"] >= 3:
+                    terms = ", ".join(aspect["top_terms"][:3])
+                    insight = f"Customers value your {terms} (mentioned in {aspect['relevant_reviews']} reviews with positive sentiment)"
+                    positive_insights.append(insight)
+            
+            # Negative aspect insights
+            for aspect in aspect_sentiments:
+                if aspect["sentiment_score"] < -0.2 and aspect["relevant_reviews"] >= 2:
+                    terms = ", ".join(aspect["top_terms"][:3])
+                    insight = f"Customers have concerns about {terms} (mentioned in {aspect['relevant_reviews']} reviews with negative sentiment)"
+                    negative_insights.append(insight)
+                    
+                    # Also generate an action item
+                    action = f"Address issues related to {terms} based on customer feedback"
+                    action_items.append(action)
+        
+        # Add cluster-based insights
+        if cluster_insights:
+            # Positive cluster insights
+            for cluster in cluster_insights:
+                if cluster["sentiment"] == "Positive" and cluster["size"] >= 5:
+                    aspects_text = ", ".join([a["aspect_name"].split(": ")[1] for a in cluster["dominant_aspects"][:2]])
+                    if aspects_text:
+                        insight = f"A significant group of customers ({cluster['size']}) praise your {aspects_text}"
+                        positive_insights.append(insight)
+            
+            # Negative cluster insights
+            for cluster in cluster_insights:
+                if cluster["sentiment"] == "Negative" and cluster["size"] >= 3:
+                    aspects_text = ", ".join([a["aspect_name"].split(": ")[1] for a in cluster["dominant_aspects"][:2]])
+                    if aspects_text:
+                        insight = f"A group of {cluster['size']} reviews show concerns about {aspects_text}"
+                        negative_insights.append(insight)
+                        
+                        # Also generate an action item
+                        action = f"Investigate and improve {aspects_text} based on the identified customer segment"
+                        action_items.append(action)
+        
+        # Add general insights based on overall sentiment
+        sentiment_counts = reviews_df["Sentiment"].value_counts(normalize=True)
+        pos_pct = sentiment_counts.get("Positive", 0)
+        neg_pct = sentiment_counts.get("Negative", 0)
+        
+        if pos_pct > 0.75:
+            positive_insights.append(f"Overall sentiment is very positive ({pos_pct*100:.1f}%). Consider using reviews in marketing.")
+            action_items.append("Develop a testimonial program featuring your most enthusiastic customer reviews")
+        elif neg_pct > 0.4:
+            negative_insights.append(f"Overall sentiment shows concerns ({neg_pct*100:.1f}% negative). Consider a review of operations.")
+            action_items.append("Conduct a comprehensive review of business operations to address core customer concerns")
+        
+        # Add standard action items
+        action_items.extend([
+            "Respond to negative reviews promptly and professionally",
+            "Track sentiment trends monthly to measure improvement",
+            "Implement a customer feedback system to catch issues before they result in negative reviews"
+        ])
+        
+        # Deduplicate and limit insights
+        positive_insights = list(dict.fromkeys(positive_insights))[:5]  # Take top 5 unique insights
+        negative_insights = list(dict.fromkeys(negative_insights))[:5]  # Take top 5 unique insights
+        action_items = list(dict.fromkeys(action_items))[:5]  # Take top 5 unique actions
+        
+        return {
+            "status": "success",
+            "positive_insights": positive_insights,
+            "negative_insights": negative_insights,
+            "action_items": action_items,
+            "aspects_data": aspects_data["aspects"],
+            "cluster_insights": cluster_insights,
+            "aspect_sentiments": aspect_sentiments
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+def visualize_aspects(aspects_data, aspect_sentiments, figure_sizes):
+    """Create visualizations for discovered aspects and their sentiments"""
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    
+    if not aspects_data or not aspect_sentiments:
+        return None, None
+    
+    # 1. Create aspect importance visualization
+    aspect_names = [a["name"].split(": ")[1] for a in aspects_data]
+    aspect_weights = [a["weight"] for a in aspects_data]
+    
+    # Normalize weights for better visualization
+    aspect_weights = [w / max(aspect_weights) for w in aspect_weights]
+    
+    # Create horizontal bar chart of aspect importance
+    fig1, ax1 = plt.subplots(figsize=figure_sizes["medium"])
+    y_pos = np.arange(len(aspect_names))
+    
+    bars = ax1.barh(y_pos, aspect_weights, align='center', color='skyblue')
+    ax1.set_yticks(y_pos)
+    ax1.set_yticklabels(aspect_names)
+    ax1.invert_yaxis()  # Labels read top-to-bottom
+    ax1.set_title('Key Aspects in Reviews', fontsize=10)
+    ax1.set_xlabel('Relative Importance', fontsize=9)
+    
+    # Add labels with top terms for each aspect
+    for i, bar in enumerate(bars):
+        width = bar.get_width()
+        terms = ", ".join(aspects_data[i]["top_terms"][:3])
+        ax1.text(width + 0.01, bar.get_y() + bar.get_height()/2, 
+                 terms, va='center', fontsize=7)
+    
+    plt.tight_layout()
+    
+    # 2. Create aspect sentiment visualization
+    sentiment_scores = [a["sentiment_score"] for a in aspect_sentiments]
+    aspect_names = [a["aspect_name"].split(": ")[1] for a in aspect_sentiments]
+    
+    # Sort by sentiment score
+    sorted_indices = np.argsort(sentiment_scores)
+    sorted_scores = [sentiment_scores[i] for i in sorted_indices]
+    sorted_names = [aspect_names[i] for i in sorted_indices]
+    
+    # Set colors based on sentiment (red for negative, green for positive)
+    colors = ['red' if s < 0 else 'green' for s in sorted_scores]
+    
+    fig2, ax2 = plt.subplots(figsize=figure_sizes["medium"])
+    y_pos = np.arange(len(sorted_names))
+    
+    bars = ax2.barh(y_pos, sorted_scores, align='center', color=colors)
+    ax2.set_yticks(y_pos)
+    ax2.set_yticklabels(sorted_names)
+    ax2.invert_yaxis()  # Labels read top-to-bottom
+    ax2.set_title('Aspect Sentiment Analysis', fontsize=10)
+    ax2.set_xlabel('Sentiment Score (-1 to 1)', fontsize=9)
+    
+    # Add a vertical line at 0
+    ax2.axvline(x=0, color='black', linestyle='-', alpha=0.3)
+    
+    # Add labels with review counts
+    for i, bar in enumerate(bars):
+        width = bar.get_width()
+        aspect_idx = sorted_indices[i]
+        review_count = aspect_sentiments[aspect_idx]["relevant_reviews"]
+        
+        label_x = width + 0.01 if width >= 0 else width - 0.01
+        ha = 'left' if width >= 0 else 'right'
+        
+        ax2.text(label_x, bar.get_y() + bar.get_height()/2, 
+                 f"{review_count} reviews", va='center', ha=ha, fontsize=7)
+    
+    plt.tight_layout()
+    
+    return fig1, fig2
 
 # Helper functions
 def clean_text(text):
@@ -390,7 +782,6 @@ if st.button("🚀 Fetch & Analyze Reviews") and place_id:
         st.stop()
     
     
-    
     # Word Clouds - only if we have enough data
     try:
         if len(df) > 5:
@@ -490,182 +881,106 @@ if st.button("🚀 Fetch & Analyze Reviews") and place_id:
                 st.info("Not enough data for negative keyword analysis")
     except Exception as e:
         st.warning(f"Error in keyword analysis: {str(e)}")
-    
-    # Smart Recommendations
+        
+    # Smart Recommendations with ML only
     try:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        st.subheader("🤖 Smart Recommendations")
+        st.subheader("🤖 ML-Based Smart Recommendations")
         
-        # Define common business issues and solutions based on keywords
-        business_insights = {
-            "service": {
-                "positive": "Your service is praised by customers. Continue training staff on excellent customer service techniques.",
-                "negative": "Service issues appear in negative reviews. Consider staff training or reviewing service protocols."
-            },
-            "price": {
-                "positive": "Customers find your pricing reasonable and fair. Maintain this pricing strategy.",
-                "negative": "Price concerns appear in negative reviews. Consider reviewing your pricing strategy or better communicating value."
-            },
-            "quality": {
-                "positive": "Product/service quality is appreciated. Maintain your quality standards.",
-                "negative": "Quality concerns appear in reviews. Review quality control processes."
-            },
-            "wait": {
-                "positive": "Customers appreciate your efficient timing/waiting periods.",
-                "negative": "Wait times appear to be an issue. Consider operational efficiency improvements."
-            },
-            "clean": {
-                "positive": "Cleanliness is noted positively. Maintain your cleanliness standards.",
-                "negative": "Cleanliness concerns appear in reviews. Review cleaning protocols."
-            },
-            "staff": {
-                "positive": "Your staff receives positive mentions. Recognize and reward good employees.",
-                "negative": "Staff-related concerns appear in reviews. Consider additional training or reviewing hiring practices."
-            },
-            "location": {
-                "positive": "Your location is mentioned positively. Highlight this in marketing materials.",
-                "negative": "Location issues appear in reviews. Consider improving signage, access, or parking if possible."
-            },
-            "food": {
-                "positive": "Food quality is praised. Maintain your food preparation standards.",
-                "negative": "Food quality issues appear in reviews. Review kitchen operations and quality control."
-            },
-            "atmosphere": {
-                "positive": "Customers enjoy your atmosphere/ambiance. Maintain this environment.",
-                "negative": "Atmosphere concerns appear in reviews. Consider refreshing your space's design or ambiance."
-            },
-            "parking": {
-                "positive": "Parking is mentioned positively. Continue to maintain good parking options.",
-                "negative": "Parking issues appear in reviews. Consider improving parking options or providing clearer instructions."
-            },
-            "menu": {
-                "positive": "Your menu receives positive attention. Continue with your current menu strategy.",
-                "negative": "Menu concerns appear in reviews. Consider updating options or improving descriptions."
-            },
-            "value": {
-                "positive": "Customers find good value in your offerings. Maintain this balance of price and quality.",
-                "negative": "Value concerns appear in reviews. Review pricing or improve quality to increase perceived value."
-            },
-            "friendly": {
-                "positive": "Friendliness is mentioned positively. Continue encouraging friendly customer interactions.",
-                "negative": "Consider emphasizing a more friendly approach to customer service."
-            },
-            "recommend": {
-                "positive": "Customers are recommending your business - excellent! Consider a referral program.",
-                "negative": "Work on issues that prevent customers from recommending your business."
-            },
-            "management": {
-                "positive": "Management is mentioned positively. Maintain these management practices.",
-                "negative": "Management concerns appear in reviews. Consider reviewing management training or approaches."
-            },
-            "reservation": {
-                "positive": "Your reservation system works well for customers.",
-                "negative": "Reservation issues appear in reviews. Review your reservation system or processes."
-            },
-            "bathroom": {
-                "positive": "Restrooms are mentioned positively. Maintain cleanliness standards.",
-                "negative": "Bathroom concerns appear in reviews. Improve cleaning frequency or facilities."
-            },
-            "noisy": {
-                "positive": "Customers appreciate the sound levels in your establishment.",
-                "negative": "Noise issues appear in reviews. Consider acoustic improvements or music volume adjustments."
-            },
-            "portion": {
-                "positive": "Portion sizes are mentioned positively. Maintain current portion standards.",
-                "negative": "Portion size concerns appear in reviews. Review your portion sizing strategy."
-            },
-            "delivery": {
-                "positive": "Delivery service is praised by customers. Maintain delivery standards.",
-                "negative": "Delivery issues appear in reviews. Review delivery processes and timing."
-            },
-            "return": {
-                "positive": "Customers mention returning to your business - excellent repeat business!",
-                "negative": "Consider addressing issues that prevent customers from returning."
-            }
-        }
-        
-        # Check for keywords in positive and negative reviews
-        positive_insights = []
-        negative_insights = []
-        
-        positive_text = " ".join(df[df["Sentiment"] == "Positive"]["Cleaned_Review"]).lower()
-        negative_text = " ".join(df[df["Sentiment"] == "Negative"]["Cleaned_Review"]).lower()
-        
-        for keyword, insights in business_insights.items():
-            if keyword in positive_text:
-                positive_insights.append(insights["positive"])
-            if keyword in negative_text:
-                negative_insights.append(insights["negative"])
-        
-        # Add insights based on overall sentiment
-        if len(df) > 0:
-            sentiment_counts = df["Sentiment"].value_counts()
-            positive_pct = sentiment_counts.get("Positive", 0) / len(df) * 100 if len(df) > 0 else 0
-            negative_pct = sentiment_counts.get("Negative", 0) / len(df) * 100 if len(df) > 0 else 0
-            
-            if positive_pct > 75:
-                positive_insights.append("Overall sentiment is very positive. Consider using positive reviews in marketing materials.")
-            elif positive_pct < 50:
-                negative_insights.append("Overall sentiment is concerning. Consider a comprehensive review of business operations.")
-        
-        # Add insights based on most common words
-        pos_words = get_top_words(df[df["Sentiment"] == "Positive"]["Cleaned_Review"], 5)
-        neg_words = get_top_words(df[df["Sentiment"] == "Negative"]["Cleaned_Review"], 5)
-        
-        if pos_words:
-            top_pos_words = [word for word, count in pos_words]
-            positive_insights.append(f"Customers often mention '{', '.join(top_pos_words)}' positively. Emphasize these aspects in marketing.")
-            
-        if neg_words:
-            top_neg_words = [word for word, count in neg_words]
-            negative_insights.append(f"Customers often mention '{', '.join(top_neg_words)}' negatively. Address these areas for improvement.")
-        
-        # Display recommendations
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 🟢 Strengths to Maintain")
-            if positive_insights:
-                for i, insight in enumerate(positive_insights[:5], 1):  # Limit to top 5
-                    st.markdown(f"{i}. {insight}")
-            else:
-                st.info("Not enough data to generate strength recommendations")
-        
-        with col2:
-            st.markdown("### 🔴 Areas for Improvement")
-            if negative_insights:
-                for i, insight in enumerate(negative_insights[:5], 1):  # Limit to top 5
-                    st.markdown(f"{i}. {insight}")
-            else:
-                st.info("Not enough data to generate improvement recommendations")
+        # Only run if we have enough data
+        if len(df) >= 20:  # Need reasonable amount for ML
+            with st.spinner("Training machine learning models on your reviews..."):
+                # Run the ML recommendation system
+                ml_recommendations = generate_ml_recommendations(df)
                 
-        # Add a section for actionable next steps
-        if positive_insights or negative_insights:
-            st.markdown('<div class="subsection-divider"></div>', unsafe_allow_html=True)
-            st.markdown("### 📝 Actionable Next Steps")
+                if ml_recommendations["status"] == "success":
+                    # Show discovered aspects
+                    st.markdown("### 🔍 Key Aspects Discovered in Reviews")
+                    
+                    # Create visualizations
+                    aspect_fig, sentiment_fig = visualize_aspects(
+                        ml_recommendations["aspects_data"],
+                        ml_recommendations["aspect_sentiments"],
+                        FIGURE_SIZES
+                    )
+                    
+                    if aspect_fig:
+                        # Show aspect importance visualization
+                        st.markdown('<div class="plot-container">', unsafe_allow_html=True)
+                        st.pyplot(aspect_fig)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    if sentiment_fig:
+                        # Show aspect sentiment visualization
+                        st.markdown('<div class="plot-container">', unsafe_allow_html=True)
+                        st.pyplot(sentiment_fig)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Display recommendations
+                    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("### 🟢 Strengths to Maintain")
+                        if ml_recommendations["positive_insights"]:
+                            for i, insight in enumerate(ml_recommendations["positive_insights"], 1):
+                                st.markdown(f"{i}. {insight}")
+                        else:
+                            st.info("ML model couldn't identify significant strengths")
+                    
+                    with col2:
+                        st.markdown("### 🔴 Areas for Improvement")
+                        if ml_recommendations["negative_insights"]:
+                            for i, insight in enumerate(ml_recommendations["negative_insights"], 1):
+                                st.markdown(f"{i}. {insight}")
+                        else:
+                            st.info("ML model couldn't identify significant concerns")
+                    
+                    # Add a section for actionable next steps
+                    st.markdown('<div class="subsection-divider"></div>', unsafe_allow_html=True)
+                    st.markdown("### 📝 Actionable Next Steps")
+                    
+                    if ml_recommendations["action_items"]:
+                        for i, action in enumerate(ml_recommendations["action_items"], 1):
+                            st.markdown(f"{i}. {action}")
+                    else:
+                        st.info("ML model couldn't generate specific action items")
+                        
+                    # Add explanation of ML approach
+                    with st.expander("ℹ️ How the ML Recommendation System Works"):
+                        st.markdown("""
+                        This recommendation system uses several machine learning techniques:
+                        
+                        1. **Text Vectorization**: Converts review text into numerical features
+                        2. **Topic Modeling**: Uses Non-negative Matrix Factorization (NMF) to discover key aspects in reviews
+                        3. **Sentiment Analysis**: Analyzes sentiment for each discovered aspect
+                        4. **Clustering**: Groups similar reviews to identify customer segments and their concerns
+                        5. **Insight Generation**: Combines all analyses to create data-driven recommendations
+                        
+                        Unlike rule-based systems, this approach adapts to your specific business and discovers patterns in your unique customer feedback.
+                        """)
+                else:
+                    st.warning(f"ML model error: {ml_recommendations.get('message', 'Unknown error')}")
+                    st.info("Try increasing the number of reviews for better ML performance.")
+        else:
+            st.info(f"""
+            ML recommendation system requires at least 20 reviews to work effectively.
+            You currently have {len(df)} valid reviews. Try fetching more reviews to enable this feature.
             
-            action_items = []
-            
-            if negative_insights:
-                # Prioritize addressing top negative issues
-                action_items.append("Address the top negative themes in customer reviews with specific improvement plans")
-                
-            if positive_insights:
-                # Leverage strengths
-                action_items.append("Highlight positive aspects in marketing materials and train staff to emphasize these strengths")
-            
-            # Add general best practices
-            action_items.extend([
-                "Respond to negative reviews promptly and professionally",
-                "Track sentiment trends monthly to measure improvement",
-                "Implement a customer feedback system to catch issues before they result in negative reviews",
-                "Train staff on common customer pain points identified in the analysis"
-            ])
-            
-            for i, action in enumerate(action_items, 1):
-                st.markdown(f"{i}. {action}")
+            With more reviews, the system can:
+            - Discover key themes in customer feedback
+            - Analyze sentiment for each theme
+            - Generate tailored, data-driven recommendations
+            """)
     except Exception as e:
-        st.warning(f"Error generating recommendations: {str(e)}")
+        st.warning(f"Error in ML recommendation system: {str(e)}")
+        st.info("""
+        Basic recommendations:
+        1. Respond to negative reviews promptly and professionally
+        2. Track sentiment trends monthly to measure improvement
+        3. Implement a customer feedback system to catch issues early
+        4. Train staff on customer service best practices
+        """)
     
     # Download Results
     try:
@@ -698,5 +1013,5 @@ else:
         - 🔍 **Common Words Analysis**: Discover what words customers mention most often
         - ☁️ **Word Clouds**: Visualize common words in positive and negative reviews
         - 📊 **Sentiment Analysis**: AI-powered sentiment detection using VADER
-        - 💡 **Smart Recommendations**: Get actionable business advice based on customer feedback
+        - 💡 **Smart Recommendations**: Get ML-powered business advice based on customer feedback
         """)
