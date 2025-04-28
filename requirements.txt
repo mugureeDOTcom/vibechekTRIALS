@@ -7,3 +7,6 @@ scikit-learn (sklearn)
 wordcloud
 serpapi
 scipy
+transformers
+torch
+sentencepiece
