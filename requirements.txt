@@ -3,10 +3,6 @@ pandas
 numpy
 matplotlib
 nltk
-scikit-learn (sklearn)
 wordcloud
+google-search-results
 serpapi
-scipy
-transformers
-torch
-sentencepiece
