@@ -1,9 +1,14 @@
 streamlit
 pandas
-numpy
 matplotlib
 nltk
 wordcloud
-google-search-results
 serpapi
-pip install transfomers torch
+transformers
+torch
+scikit-learn
+protobuf
+regex
+requests
+numpy
+tqdm
