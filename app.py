@@ -1,4 +1,7 @@
 # streamlit_app.py
+import torch
+from transformers import pipeline, AutoModeForSequenceClassification, AutoTokenizer
+from transformers import AutoModelForSeq2SeqLM
 import streamlit as st
 import pandas as pd
 import re
@@ -139,7 +142,80 @@ def get_top_words(reviews, n=10):
 def convert_df_to_csv(df):
     """Convert dataframe to CSV for download"""
     return df.to_csv(index=False).encode('utf-8')
+@st.cache_resource
+def load_nlp_models():
+    """Load and cache the HuggingFace models for sentiment analysis and summarization"""
+    try:
+        # Load sentiment analysis model
+        sentiment_model = pipeline(
+            "sentiment-analysis",
+            model="distilbert-base-uncased-finetuned-sst-2-english",
+            return_all_scores=True
+        )
+        
+        # Load summarization model
+        summarizer = pipeline(
+            "summarization",
+            model="sshleifer/distilbart-cnn-12-6",
+            max_length=100,
+            min_length=30,
+            do_sample=False
+        )
+        
+        return sentiment_model, summarizer
+    except Exception as e:
+        st.error(f"Error loading NLP models: {str(e)}")
+        return None, None
+ def ml_sentiment_analysis(text, sentiment_model):
+    """Perform sentiment analysis using the Hugging Face model"""
+    if not text or len(text) < 10:
+        return "Neutral"
+    
+    try:
+        # Get model prediction
+        result = sentiment_model(text[:512])[0]  # Limit text length to avoid token limit errors
+        
+        # Extract scores - model returns [{'label': 'NEGATIVE', 'score': 0.xxx}, {'label': 'POSITIVE', 'score': 0.xxx}]
+        scores = {item['label']: item['score'] for item in result}
+        
+        # Determine sentiment based on confidence scores
+        if 'POSITIVE' in scores and scores['POSITIVE'] > 0.6:
+            return "Positive"
+        elif 'NEGATIVE' in scores and scores['NEGATIVE'] > 0.6:
+            return "Negative"
+        else:
+            return "Neutral"
+    except Exception as e:
+        st.warning(f"Sentiment model error: {str(e)}")
+        return "Neutral"
 
+def summarize_reviews(reviews, summarizer, sentiment_type="all"):
+    """Summarize a collection of reviews using the Hugging Face summarization model"""
+    if not reviews or len(reviews) < 3:  # Need at least a few reviews to summarize
+        return f"Not enough {sentiment_type.lower()} reviews to generate insights."
+    
+    # Combine reviews into one text (limit to avoid token limits)
+    combined_text = " ".join(reviews[:50])
+    
+    # Ensure the text is substantial enough
+    if len(combined_text) < 100:
+        return f"Not enough {sentiment_type.lower()} review content to generate insights."
+    
+    try:
+        # Generate summary
+        summary = summarizer(combined_text, 
+                           max_length=100,
+                           min_length=30,
+                           do_sample=False)
+        
+        # Extract the summary text and capitalize the first letter
+        summary_text = summary[0]['summary_text']
+        summary_text = summary_text[0].upper() + summary_text[1:] if summary_text else ""
+        
+        return summary_text
+    except Exception as e:
+        st.warning(f"Summarization error: {str(e)}")
+        return f"Unable to generate {sentiment_type.lower()} review summary due to an error."      
 # Download NLTK data at startup
 try:
     nltk.data.find('vader_lexicon')
@@ -493,179 +569,119 @@ if st.button("🚀 Fetch & Analyze Reviews") and place_id:
     
     # Smart Recommendations
     try:
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        st.subheader("🤖 Smart Recommendations")
-        
-        # Define common business issues and solutions based on keywords
-        business_insights = {
-            "service": {
-                "positive": "Your service is praised by customers. Continue training staff on excellent customer service techniques.",
-                "negative": "Service issues appear in negative reviews. Consider staff training or reviewing service protocols."
-            },
-            "price": {
-                "positive": "Customers find your pricing reasonable and fair. Maintain this pricing strategy.",
-                "negative": "Price concerns appear in negative reviews. Consider reviewing your pricing strategy or better communicating value."
-            },
-            "quality": {
-                "positive": "Product/service quality is appreciated. Maintain your quality standards.",
-                "negative": "Quality concerns appear in reviews. Review quality control processes."
-            },
-            "wait": {
-                "positive": "Customers appreciate your efficient timing/waiting periods.",
-                "negative": "Wait times appear to be an issue. Consider operational efficiency improvements."
-            },
-            "clean": {
-                "positive": "Cleanliness is noted positively. Maintain your cleanliness standards.",
-                "negative": "Cleanliness concerns appear in reviews. Review cleaning protocols."
-            },
-            "staff": {
-                "positive": "Your staff receives positive mentions. Recognize and reward good employees.",
-                "negative": "Staff-related concerns appear in reviews. Consider additional training or reviewing hiring practices."
-            },
-            "location": {
-                "positive": "Your location is mentioned positively. Highlight this in marketing materials.",
-                "negative": "Location issues appear in reviews. Consider improving signage, access, or parking if possible."
-            },
-            "food": {
-                "positive": "Food quality is praised. Maintain your food preparation standards.",
-                "negative": "Food quality issues appear in reviews. Review kitchen operations and quality control."
-            },
-            "atmosphere": {
-                "positive": "Customers enjoy your atmosphere/ambiance. Maintain this environment.",
-                "negative": "Atmosphere concerns appear in reviews. Consider refreshing your space's design or ambiance."
-            },
-            "parking": {
-                "positive": "Parking is mentioned positively. Continue to maintain good parking options.",
-                "negative": "Parking issues appear in reviews. Consider improving parking options or providing clearer instructions."
-            },
-            "menu": {
-                "positive": "Your menu receives positive attention. Continue with your current menu strategy.",
-                "negative": "Menu concerns appear in reviews. Consider updating options or improving descriptions."
-            },
-            "value": {
-                "positive": "Customers find good value in your offerings. Maintain this balance of price and quality.",
-                "negative": "Value concerns appear in reviews. Review pricing or improve quality to increase perceived value."
-            },
-            "friendly": {
-                "positive": "Friendliness is mentioned positively. Continue encouraging friendly customer interactions.",
-                "negative": "Consider emphasizing a more friendly approach to customer service."
-            },
-            "recommend": {
-                "positive": "Customers are recommending your business - excellent! Consider a referral program.",
-                "negative": "Work on issues that prevent customers from recommending your business."
-            },
-            "management": {
-                "positive": "Management is mentioned positively. Maintain these management practices.",
-                "negative": "Management concerns appear in reviews. Consider reviewing management training or approaches."
-            },
-            "reservation": {
-                "positive": "Your reservation system works well for customers.",
-                "negative": "Reservation issues appear in reviews. Review your reservation system or processes."
-            },
-            "bathroom": {
-                "positive": "Restrooms are mentioned positively. Maintain cleanliness standards.",
-                "negative": "Bathroom concerns appear in reviews. Improve cleaning frequency or facilities."
-            },
-            "noisy": {
-                "positive": "Customers appreciate the sound levels in your establishment.",
-                "negative": "Noise issues appear in reviews. Consider acoustic improvements or music volume adjustments."
-            },
-            "portion": {
-                "positive": "Portion sizes are mentioned positively. Maintain current portion standards.",
-                "negative": "Portion size concerns appear in reviews. Review your portion sizing strategy."
-            },
-            "delivery": {
-                "positive": "Delivery service is praised by customers. Maintain delivery standards.",
-                "negative": "Delivery issues appear in reviews. Review delivery processes and timing."
-            },
-            "return": {
-                "positive": "Customers mention returning to your business - excellent repeat business!",
-                "negative": "Consider addressing issues that prevent customers from returning."
-            }
-        }
-        
-        # Check for keywords in positive and negative reviews
-        positive_insights = []
-        negative_insights = []
-        
-        positive_text = " ".join(df[df["Sentiment"] == "Positive"]["Cleaned_Review"]).lower()
-        negative_text = " ".join(df[df["Sentiment"] == "Negative"]["Cleaned_Review"]).lower()
-        
-        for keyword, insights in business_insights.items():
-            if keyword in positive_text:
-                positive_insights.append(insights["positive"])
-            if keyword in negative_text:
-                negative_insights.append(insights["negative"])
-        
-        # Add insights based on overall sentiment
-        if len(df) > 0:
-            sentiment_counts = df["Sentiment"].value_counts()
-            positive_pct = sentiment_counts.get("Positive", 0) / len(df) * 100 if len(df) > 0 else 0
-            negative_pct = sentiment_counts.get("Negative", 0) / len(df) * 100 if len(df) > 0 else 0
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    st.subheader("🤖 AI-Powered Business Insights")
+    
+    # Load the models
+    sentiment_model, summarizer = load_nlp_models()
+    
+    if sentiment_model is None or summarizer is None:
+        st.error("Could not load NLP models. Please check your internet connection and try again.")
+        st.stop()
+    
+    # Apply ML-based sentiment analysis if we have enough reviews
+    if len(df) > 5:
+        with st.spinner("Generating AI insights..."):
+            # Use batch processing for efficiency (optional)
+            # This is where you'd replace the existing sentiment analysis with ML version
+            # But for simplicity, we'll use the existing sentiment column
             
-            if positive_pct > 75:
-                positive_insights.append("Overall sentiment is very positive. Consider using positive reviews in marketing materials.")
-            elif positive_pct < 50:
-                negative_insights.append("Overall sentiment is concerning. Consider a comprehensive review of business operations.")
-        
-        # Add insights based on most common words
-        pos_words = get_top_words(df[df["Sentiment"] == "Positive"]["Cleaned_Review"], 5)
-        neg_words = get_top_words(df[df["Sentiment"] == "Negative"]["Cleaned_Review"], 5)
-        
-        if pos_words:
-            top_pos_words = [word for word, count in pos_words]
-            positive_insights.append(f"Customers often mention '{', '.join(top_pos_words)}' positively. Emphasize these aspects in marketing.")
+            # If you want to refresh sentiment with the ML model:
+            # sample_size = min(100, len(df))  # Limit processing to 100 reviews for performance
+            # sampled_df = df.sample(sample_size) if sample_size < len(df) else df
+            # sampled_df["ML_Sentiment"] = sampled_df["Cleaned_Review"].apply(
+            #     lambda x: ml_sentiment_analysis(x, sentiment_model)
+            # )
+            # df = df.copy()
+            # df.loc[sampled_df.index, "Sentiment"] = sampled_df["ML_Sentiment"]
             
-        if neg_words:
-            top_neg_words = [word for word, count in neg_words]
-            negative_insights.append(f"Customers often mention '{', '.join(top_neg_words)}' negatively. Address these areas for improvement.")
-        
-        # Display recommendations
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 🟢 Strengths to Maintain")
-            if positive_insights:
-                for i, insight in enumerate(positive_insights[:5], 1):  # Limit to top 5
-                    st.markdown(f"{i}. {insight}")
-            else:
-                st.info("Not enough data to generate strength recommendations")
-        
-        with col2:
-            st.markdown("### 🔴 Areas for Improvement")
-            if negative_insights:
-                for i, insight in enumerate(negative_insights[:5], 1):  # Limit to top 5
-                    st.markdown(f"{i}. {insight}")
-            else:
-                st.info("Not enough data to generate improvement recommendations")
-                
-        # Add a section for actionable next steps
-        if positive_insights or negative_insights:
+            # Extract positive and negative reviews for summarization
+            positive_reviews = df[df["Sentiment"] == "Positive"]["snippet"].tolist()
+            negative_reviews = df[df["Sentiment"] == "Negative"]["snippet"].tolist()
+            
+            # Get summaries
+            positive_summary = summarize_reviews(positive_reviews, summarizer, "positive")
+            negative_summary = summarize_reviews(negative_reviews, summarizer, "negative")
+            
+            # Display summaries
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### 🟢 Strengths & Positive Feedback")
+                if len(positive_reviews) > 3:
+                    st.markdown(f"**AI Summary:** {positive_summary}")
+                    
+                    # Add some context about what customers like
+                    pos_words = get_top_words(df[df["Sentiment"] == "Positive"]["Cleaned_Review"], 5)
+                    if pos_words:
+                        top_pos_words = [word for word, count in pos_words]
+                        st.markdown(f"**Top positive mentions:** {', '.join(top_pos_words)}")
+                else:
+                    st.info("Not enough positive reviews to generate AI insights")
+            
+            with col2:
+                st.markdown("### 🔴 Areas for Improvement")
+                if len(negative_reviews) > 3:
+                    st.markdown(f"**AI Summary:** {negative_summary}")
+                    
+                    # Add context about customer pain points
+                    neg_words = get_top_words(df[df["Sentiment"] == "Negative"]["Cleaned_Review"], 5)
+                    if neg_words:
+                        top_neg_words = [word for word, count in neg_words]
+                        st.markdown(f"**Top negative mentions:** {', '.join(top_neg_words)}")
+                else:
+                    st.info("Not enough negative reviews to generate AI insights")
+            
+            # Add actionable recommendations based on the summaries
             st.markdown('<div class="subsection-divider"></div>', unsafe_allow_html=True)
-            st.markdown("### 📝 Actionable Next Steps")
+            st.markdown("### 📋 Strategic Recommendations")
             
-            action_items = []
+            # Get sentiment distribution
+            sentiment_counts = df["Sentiment"].value_counts()
+            total_reviews = len(df)
+            positive_pct = sentiment_counts.get("Positive", 0) / total_reviews * 100 if total_reviews > 0 else 0
+            negative_pct = sentiment_counts.get("Negative", 0) / total_reviews * 100 if total_reviews > 0 else 0
+            neutral_pct = sentiment_counts.get("Neutral", 0) / total_reviews * 100 if total_reviews > 0 else 0
             
-            if negative_insights:
-                # Prioritize addressing top negative issues
-                action_items.append("Address the top negative themes in customer reviews with specific improvement plans")
-                
-            if positive_insights:
-                # Leverage strengths
-                action_items.append("Highlight positive aspects in marketing materials and train staff to emphasize these strengths")
+            # Create a recommendations framework based on sentiment distribution
+            recommendations = []
             
-            # Add general best practices
-            action_items.extend([
-                "Respond to negative reviews promptly and professionally",
-                "Track sentiment trends monthly to measure improvement",
-                "Implement a customer feedback system to catch issues before they result in negative reviews",
-                "Train staff on common customer pain points identified in the analysis"
-            ])
+            # Overall sentiment health
+            if positive_pct >= 70:
+                recommendations.append("**Overall Brand Health:** Your business has a strong positive reputation. Focus on maintaining quality while addressing specific negative feedback areas.")
+            elif positive_pct >= 50:
+                recommendations.append("**Overall Brand Health:** Your business has a moderately positive reputation. Address key negative themes while reinforcing positive attributes.")
+            else:
+                recommendations.append("**Overall Brand Health:** Your business needs significant improvement in customer satisfaction. Prioritize addressing the negative feedback themes immediately.")
             
-            for i, action in enumerate(action_items, 1):
-                st.markdown(f"{i}. {action}")
-    except Exception as e:
-        st.warning(f"Error generating recommendations: {str(e)}")
+            # Response strategy
+            if negative_pct > 20:
+                recommendations.append("**Response Strategy:** Implement a proactive review response protocol for all negative reviews within 24-48 hours.")
+            else:
+                recommendations.append("**Response Strategy:** Continue responding to selected reviews, focusing on the most detailed feedback.")
+            
+            # Marketing recommendations
+            if positive_pct >= 60:
+                recommendations.append("**Marketing Opportunity:** Leverage positive reviews in marketing materials and consider implementing a customer testimonial program.")
+            
+            # Operational focus
+            if len(negative_reviews) >= 5:
+                recommendations.append(f"**Operational Focus:** Based on negative feedback patterns, prioritize improvements in: {', '.join(top_neg_words[:3]) if 'top_neg_words' in locals() else 'customer experience areas'}.")
+            
+            # Review acquisition strategy
+            if total_reviews < 50:
+                recommendations.append("**Review Acquisition:** Implement a systematic review request process to gather more customer feedback.")
+            
+            # Display recommendations
+            for i, rec in enumerate(recommendations, 1):
+                st.markdown(f"{i}. {rec}")
+    else:
+        st.info("Need more reviews to generate meaningful AI insights. Try fetching more reviews.")
+
+except Exception as e:
+    st.warning(f"Error generating AI insights: {str(e)}")
+    # Fallback to simpler analysis if AI models fail
+    st.markdown("Falling back to basic analysis. The AI models could not be loaded.")  
     
     # Download Results
     try:
