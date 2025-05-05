@@ -196,15 +196,19 @@ def summarize_reviews(reviews, summarizer, sentiment_type="all"):
     if not reviews or len(reviews) < 3:  # Need at least a few reviews to summarize
         return f"Not enough {sentiment_type.lower()} reviews to generate insights."
     
-    # Limit to first 5-10 reviews to avoid token limit issues
-    limited_reviews = reviews[:7]
-    
-    # Combine reviews into one text
-    combined_text = " ".join(limited_reviews)
-    
-    # Ensure text isn't too long for the model (rough approximation)
-    if len(combined_text) > 3500:  # Conservative estimate
-        combined_text = combined_text[:3500]
+    # Add special handling for negative reviews
+    if sentiment_type.lower() == "negative":
+        # Use even stricter limits for negative reviews
+        limited_reviews = reviews[:5]  # Take fewer negative reviews
+        combined_text = " ".join(limited_reviews)
+        if len(combined_text) > 2500:  # Shorter limit for negatives
+            combined_text = combined_text[:2500]
+    else:
+        # For positive or other review types, use regular limits
+        limited_reviews = reviews[:7]  # Take first 7 reviews
+        combined_text = " ".join(limited_reviews)
+        if len(combined_text) > 3500:  # Conservative estimate
+            combined_text = combined_text[:3500]
     
     # Ensure the text is substantial enough
     if len(combined_text) < 100:
