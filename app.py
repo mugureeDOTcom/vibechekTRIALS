@@ -1,7 +1,4 @@
 # streamlit_app.py
-import torch
-from transformers import pipeline, AutoModeForSequenceClassification, AutoTokenizer
-from transformers import AutoModelForSeq2SeqLM
 import streamlit as st
 import pandas as pd
 import re
@@ -13,6 +10,9 @@ import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 import base64
 from collections import Counter
+import torch
+from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoModelForSeq2SeqLM
 
 # Page configuration MUST be the first Streamlit command
 st.set_page_config(page_title="VibeChek AI Dashboard", layout="wide")
@@ -142,6 +142,7 @@ def get_top_words(reviews, n=10):
 def convert_df_to_csv(df):
     """Convert dataframe to CSV for download"""
     return df.to_csv(index=False).encode('utf-8')
+
 @st.cache_resource
 def load_nlp_models():
     """Load and cache the HuggingFace models for sentiment analysis and summarization"""
@@ -166,7 +167,8 @@ def load_nlp_models():
     except Exception as e:
         st.error(f"Error loading NLP models: {str(e)}")
         return None, None
- def ml_sentiment_analysis(text, sentiment_model):
+
+def ml_sentiment_analysis(text, sentiment_model):
     """Perform sentiment analysis using the Hugging Face model"""
     if not text or len(text) < 10:
         return "Neutral"
@@ -215,7 +217,8 @@ def summarize_reviews(reviews, summarizer, sentiment_type="all"):
         return summary_text
     except Exception as e:
         st.warning(f"Summarization error: {str(e)}")
-        return f"Unable to generate {sentiment_type.lower()} review summary due to an error."      
+        return f"Unable to generate {sentiment_type.lower()} review summary due to an error."
+
 # Download NLTK data at startup
 try:
     nltk.data.find('vader_lexicon')
@@ -465,8 +468,6 @@ if st.button("🚀 Fetch & Analyze Reviews") and place_id:
         st.error(f"Error in data processing: {str(e)}")
         st.stop()
     
-    
-    
     # Word Clouds - only if we have enough data
     try:
         if len(df) > 5:
@@ -567,121 +568,121 @@ if st.button("🚀 Fetch & Analyze Reviews") and place_id:
     except Exception as e:
         st.warning(f"Error in keyword analysis: {str(e)}")
     
-    # Smart Recommendations
+    # Smart Recommendations with ML models
     try:
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    st.subheader("🤖 AI-Powered Business Insights")
-    
-    # Load the models
-    sentiment_model, summarizer = load_nlp_models()
-    
-    if sentiment_model is None or summarizer is None:
-        st.error("Could not load NLP models. Please check your internet connection and try again.")
-        st.stop()
-    
-    # Apply ML-based sentiment analysis if we have enough reviews
-    if len(df) > 5:
-        with st.spinner("Generating AI insights..."):
-            # Use batch processing for efficiency (optional)
-            # This is where you'd replace the existing sentiment analysis with ML version
-            # But for simplicity, we'll use the existing sentiment column
-            
-            # If you want to refresh sentiment with the ML model:
-            # sample_size = min(100, len(df))  # Limit processing to 100 reviews for performance
-            # sampled_df = df.sample(sample_size) if sample_size < len(df) else df
-            # sampled_df["ML_Sentiment"] = sampled_df["Cleaned_Review"].apply(
-            #     lambda x: ml_sentiment_analysis(x, sentiment_model)
-            # )
-            # df = df.copy()
-            # df.loc[sampled_df.index, "Sentiment"] = sampled_df["ML_Sentiment"]
-            
-            # Extract positive and negative reviews for summarization
-            positive_reviews = df[df["Sentiment"] == "Positive"]["snippet"].tolist()
-            negative_reviews = df[df["Sentiment"] == "Negative"]["snippet"].tolist()
-            
-            # Get summaries
-            positive_summary = summarize_reviews(positive_reviews, summarizer, "positive")
-            negative_summary = summarize_reviews(negative_reviews, summarizer, "negative")
-            
-            # Display summaries
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 🟢 Strengths & Positive Feedback")
-                if len(positive_reviews) > 3:
-                    st.markdown(f"**AI Summary:** {positive_summary}")
-                    
-                    # Add some context about what customers like
-                    pos_words = get_top_words(df[df["Sentiment"] == "Positive"]["Cleaned_Review"], 5)
-                    if pos_words:
-                        top_pos_words = [word for word, count in pos_words]
-                        st.markdown(f"**Top positive mentions:** {', '.join(top_pos_words)}")
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.subheader("🤖 AI-Powered Business Insights")
+        
+        # Load the models
+        sentiment_model, summarizer = load_nlp_models()
+        
+        if sentiment_model is None or summarizer is None:
+            st.error("Could not load NLP models. Please check your internet connection and try again.")
+            st.stop()
+        
+        # Apply ML-based sentiment analysis if we have enough reviews
+        if len(df) > 5:
+            with st.spinner("Generating AI insights..."):
+                # Use batch processing for efficiency (optional)
+                # This is where you'd replace the existing sentiment analysis with ML version
+                # But for simplicity, we'll use the existing sentiment column
+                
+                # If you want to refresh sentiment with the ML model:
+                # sample_size = min(100, len(df))  # Limit processing to 100 reviews for performance
+                # sampled_df = df.sample(sample_size) if sample_size < len(df) else df
+                # sampled_df["ML_Sentiment"] = sampled_df["Cleaned_Review"].apply(
+                #     lambda x: ml_sentiment_analysis(x, sentiment_model)
+                # )
+                # df = df.copy()
+                # df.loc[sampled_df.index, "Sentiment"] = sampled_df["ML_Sentiment"]
+                
+                # Extract positive and negative reviews for summarization
+                positive_reviews = df[df["Sentiment"] == "Positive"]["snippet"].tolist()
+                negative_reviews = df[df["Sentiment"] == "Negative"]["snippet"].tolist()
+                
+                # Get summaries
+                positive_summary = summarize_reviews(positive_reviews, summarizer, "positive")
+                negative_summary = summarize_reviews(negative_reviews, summarizer, "negative")
+                
+                # Display summaries
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("### 🟢 Strengths & Positive Feedback")
+                    if len(positive_reviews) > 3:
+                        st.markdown(f"**AI Summary:** {positive_summary}")
+                        
+                        # Add some context about what customers like
+                        pos_words = get_top_words(df[df["Sentiment"] == "Positive"]["Cleaned_Review"], 5)
+                        if pos_words:
+                            top_pos_words = [word for word, count in pos_words]
+                            st.markdown(f"**Top positive mentions:** {', '.join(top_pos_words)}")
+                    else:
+                        st.info("Not enough positive reviews to generate AI insights")
+                
+                with col2:
+                    st.markdown("### 🔴 Areas for Improvement")
+                    if len(negative_reviews) > 3:
+                        st.markdown(f"**AI Summary:** {negative_summary}")
+                        
+                        # Add context about customer pain points
+                        neg_words = get_top_words(df[df["Sentiment"] == "Negative"]["Cleaned_Review"], 5)
+                        if neg_words:
+                            top_neg_words = [word for word, count in neg_words]
+                            st.markdown(f"**Top negative mentions:** {', '.join(top_neg_words)}")
+                    else:
+                        st.info("Not enough negative reviews to generate AI insights")
+                
+                # Add actionable recommendations based on the summaries
+                st.markdown('<div class="subsection-divider"></div>', unsafe_allow_html=True)
+                st.markdown("### 📋 Strategic Recommendations")
+                
+                # Get sentiment distribution
+                sentiment_counts = df["Sentiment"].value_counts()
+                total_reviews = len(df)
+                positive_pct = sentiment_counts.get("Positive", 0) / total_reviews * 100 if total_reviews > 0 else 0
+                negative_pct = sentiment_counts.get("Negative", 0) / total_reviews * 100 if total_reviews > 0 else 0
+                neutral_pct = sentiment_counts.get("Neutral", 0) / total_reviews * 100 if total_reviews > 0 else 0
+                
+                # Create a recommendations framework based on sentiment distribution
+                recommendations = []
+                
+                # Overall sentiment health
+                if positive_pct >= 70:
+                    recommendations.append("**Overall Brand Health:** Your business has a strong positive reputation. Focus on maintaining quality while addressing specific negative feedback areas.")
+                elif positive_pct >= 50:
+                    recommendations.append("**Overall Brand Health:** Your business has a moderately positive reputation. Address key negative themes while reinforcing positive attributes.")
                 else:
-                    st.info("Not enough positive reviews to generate AI insights")
-            
-            with col2:
-                st.markdown("### 🔴 Areas for Improvement")
-                if len(negative_reviews) > 3:
-                    st.markdown(f"**AI Summary:** {negative_summary}")
-                    
-                    # Add context about customer pain points
-                    neg_words = get_top_words(df[df["Sentiment"] == "Negative"]["Cleaned_Review"], 5)
-                    if neg_words:
-                        top_neg_words = [word for word, count in neg_words]
-                        st.markdown(f"**Top negative mentions:** {', '.join(top_neg_words)}")
+                    recommendations.append("**Overall Brand Health:** Your business needs significant improvement in customer satisfaction. Prioritize addressing the negative feedback themes immediately.")
+                
+                # Response strategy
+                if negative_pct > 20:
+                    recommendations.append("**Response Strategy:** Implement a proactive review response protocol for all negative reviews within 24-48 hours.")
                 else:
-                    st.info("Not enough negative reviews to generate AI insights")
-            
-            # Add actionable recommendations based on the summaries
-            st.markdown('<div class="subsection-divider"></div>', unsafe_allow_html=True)
-            st.markdown("### 📋 Strategic Recommendations")
-            
-            # Get sentiment distribution
-            sentiment_counts = df["Sentiment"].value_counts()
-            total_reviews = len(df)
-            positive_pct = sentiment_counts.get("Positive", 0) / total_reviews * 100 if total_reviews > 0 else 0
-            negative_pct = sentiment_counts.get("Negative", 0) / total_reviews * 100 if total_reviews > 0 else 0
-            neutral_pct = sentiment_counts.get("Neutral", 0) / total_reviews * 100 if total_reviews > 0 else 0
-            
-            # Create a recommendations framework based on sentiment distribution
-            recommendations = []
-            
-            # Overall sentiment health
-            if positive_pct >= 70:
-                recommendations.append("**Overall Brand Health:** Your business has a strong positive reputation. Focus on maintaining quality while addressing specific negative feedback areas.")
-            elif positive_pct >= 50:
-                recommendations.append("**Overall Brand Health:** Your business has a moderately positive reputation. Address key negative themes while reinforcing positive attributes.")
-            else:
-                recommendations.append("**Overall Brand Health:** Your business needs significant improvement in customer satisfaction. Prioritize addressing the negative feedback themes immediately.")
-            
-            # Response strategy
-            if negative_pct > 20:
-                recommendations.append("**Response Strategy:** Implement a proactive review response protocol for all negative reviews within 24-48 hours.")
-            else:
-                recommendations.append("**Response Strategy:** Continue responding to selected reviews, focusing on the most detailed feedback.")
-            
-            # Marketing recommendations
-            if positive_pct >= 60:
-                recommendations.append("**Marketing Opportunity:** Leverage positive reviews in marketing materials and consider implementing a customer testimonial program.")
-            
-            # Operational focus
-            if len(negative_reviews) >= 5:
-                recommendations.append(f"**Operational Focus:** Based on negative feedback patterns, prioritize improvements in: {', '.join(top_neg_words[:3]) if 'top_neg_words' in locals() else 'customer experience areas'}.")
-            
-            # Review acquisition strategy
-            if total_reviews < 50:
-                recommendations.append("**Review Acquisition:** Implement a systematic review request process to gather more customer feedback.")
-            
-            # Display recommendations
-            for i, rec in enumerate(recommendations, 1):
-                st.markdown(f"{i}. {rec}")
-    else:
-        st.info("Need more reviews to generate meaningful AI insights. Try fetching more reviews.")
+                    recommendations.append("**Response Strategy:** Continue responding to selected reviews, focusing on the most detailed feedback.")
+                
+                # Marketing recommendations
+                if positive_pct >= 60:
+                    recommendations.append("**Marketing Opportunity:** Leverage positive reviews in marketing materials and consider implementing a customer testimonial program.")
+                
+                # Operational focus
+                if len(negative_reviews) >= 5:
+                    recommendations.append(f"**Operational Focus:** Based on negative feedback patterns, prioritize improvements in: {', '.join(top_neg_words[:3]) if 'top_neg_words' in locals() else 'customer experience areas'}.")
+                
+                # Review acquisition strategy
+                if total_reviews < 50:
+                    recommendations.append("**Review Acquisition:** Implement a systematic review request process to gather more customer feedback.")
+                
+                # Display recommendations
+                for i, rec in enumerate(recommendations, 1):
+                    st.markdown(f"{i}. {rec}")
+        else:
+            st.info("Need more reviews to generate meaningful AI insights. Try fetching more reviews.")
 
-except Exception as e:
-    st.warning(f"Error generating AI insights: {str(e)}")
-    # Fallback to simpler analysis if AI models fail
-    st.markdown("Falling back to basic analysis. The AI models could not be loaded.")  
+    except Exception as e:
+        st.warning(f"Error generating AI insights: {str(e)}")
+        # Fallback to simpler analysis if AI models fail
+        st.markdown("Falling back to basic analysis. The AI models could not be loaded.")
     
     # Download Results
     try:
