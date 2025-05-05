@@ -192,44 +192,81 @@ def ml_sentiment_analysis(text, sentiment_model):
         return "Neutral"
 
 def summarize_reviews(reviews, summarizer, sentiment_type="all"):
-    """Summarize a collection of reviews using the Hugging Face summarization model"""
+    """Summarize a collection of reviews using batching for efficiency"""
     if not reviews or len(reviews) < 3:  # Need at least a few reviews to summarize
         return f"Not enough {sentiment_type.lower()} reviews to generate insights."
     
-    # Add special handling for negative reviews
-    if sentiment_type.lower() == "negative":
-        # Use even stricter limits for negative reviews
-        limited_reviews = reviews[:5]  # Take fewer negative reviews
-        combined_text = " ".join(limited_reviews)
-        if len(combined_text) > 2500:  # Shorter limit for negatives
-            combined_text = combined_text[:2500]
-    else:
-        # For positive or other review types, use regular limits
-        limited_reviews = reviews[:7]  # Take first 7 reviews
-        combined_text = " ".join(limited_reviews)
-        if len(combined_text) > 3500:  # Conservative estimate
-            combined_text = combined_text[:3500]
+    # Define batch size based on sentiment
+    batch_size = 5 if sentiment_type.lower() == "negative" else 7
     
-    # Ensure the text is substantial enough
-    if len(combined_text) < 100:
-        return f"Not enough {sentiment_type.lower()} review content to generate insights."
+    # Create batches
+    batches = []
+    for i in range(0, min(len(reviews), 50), batch_size):  # Limit to first 50 reviews max
+        batch = reviews[i:i+batch_size]
+        batches.append(batch)
     
+    # Process each batch
+    batch_summaries = []
+    for batch in batches:
+        try:
+            # Combine reviews in the batch
+            combined_text = " ".join(batch)
+            
+            # Skip if too small
+            if len(combined_text) < 100:
+                continue
+                
+            # Truncate if too long
+            max_length = 2500 if sentiment_type.lower() == "negative" else 3500
+            if len(combined_text) > max_length:
+                combined_text = combined_text[:max_length]
+            
+            # Generate summary for this batch
+            summary = summarizer(combined_text, 
+                             max_length=50,  # Shorter for batch summaries
+                             min_length=20,
+                             do_sample=False,
+                             truncation=True)
+            
+            # Extract and add the summary text
+            summary_text = summary[0]['summary_text']
+            if summary_text:
+                batch_summaries.append(summary_text)
+                
+        except Exception as e:
+            st.warning(f"Batch summarization error: {str(e)}")
+            # Continue with other batches even if one fails
+            continue
+    
+    # Check if we got any batch summaries
+    if not batch_summaries:
+        return f"Unable to generate {sentiment_type.lower()} review summary."
+    
+    # Now summarize the batch summaries for a final summary
     try:
-        # Generate summary with explicit parameters
-        summary = summarizer(combined_text, 
-                         max_length=100,
-                         min_length=30,
-                         do_sample=False,
-                         truncation=True)  # Add truncation=True
+        # Combine batch summaries
+        final_text = " ".join(batch_summaries)
         
-        # Extract the summary text and capitalize the first letter
-        summary_text = summary[0]['summary_text']
+        # Generate final summary
+        final_summary = summarizer(final_text, 
+                              max_length=100,
+                              min_length=30,
+                              do_sample=False,
+                              truncation=True)
+        
+        # Extract and format the summary text
+        summary_text = final_summary[0]['summary_text']
         summary_text = summary_text[0].upper() + summary_text[1:] if summary_text else ""
         
         return summary_text
     except Exception as e:
-        st.warning(f"Summarization error: {str(e)}")
-        return f"Unable to generate {sentiment_type.lower()} review summary due to an error."
+        st.warning(f"Final summarization error: {str(e)}")
+        
+        # If final summarization fails, return the first batch summary as fallback
+        if batch_summaries:
+            return f"Summary of reviews: {batch_summaries[0]}"
+        else:
+            return f"Unable to generate {sentiment_type.lower()} review summary due to an error."
 
 # Download NLTK data at startup
 try:
