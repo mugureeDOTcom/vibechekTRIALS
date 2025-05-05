@@ -584,17 +584,15 @@ if st.button("🚀 Fetch & Analyze Reviews") and place_id:
         if len(df) > 5:
             with st.spinner("Generating AI insights..."):
                 # Use batch processing for efficiency (optional)
-                # This is where you'd replace the existing sentiment analysis with ML version
-                # But for simplicity, we'll use the existing sentiment column
                 
                 # If you want to refresh sentiment with the ML model:
-                # sample_size = min(100, len(df))  # Limit processing to 100 reviews for performance
-                # sampled_df = df.sample(sample_size) if sample_size < len(df) else df
-                # sampled_df["ML_Sentiment"] = sampled_df["Cleaned_Review"].apply(
-                #     lambda x: ml_sentiment_analysis(x, sentiment_model)
-                # )
-                # df = df.copy()
-                # df.loc[sampled_df.index, "Sentiment"] = sampled_df["ML_Sentiment"]
+                sample_size = min(100, len(df))  # Limit processing to 100 reviews for performance
+                sampled_df = df.sample(sample_size) if sample_size < len(df) else df
+                sampled_df["ML_Sentiment"] = sampled_df["Cleaned_Review"].apply(
+                    lambda x: ml_sentiment_analysis(x, sentiment_model)
+                )
+                df = df.copy()
+                df.loc[sampled_df.index, "Sentiment"] = sampled_df["ML_Sentiment"]
                 
                 # Extract positive and negative reviews for summarization
                 positive_reviews = df[df["Sentiment"] == "Positive"]["snippet"].tolist()
