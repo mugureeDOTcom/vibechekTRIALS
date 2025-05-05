@@ -10,5 +10,6 @@ scikit-learn
 protobuf
 regex
 requests
+google-search-results
 numpy
 tqdm
