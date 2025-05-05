@@ -6,3 +6,4 @@ nltk
 wordcloud
 google-search-results
 serpapi
+pip install transfomers torch
